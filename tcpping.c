@@ -516,7 +516,7 @@ void got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *pa
                   );
         }
 
-		if (ms < host->min_ping || host->min_ping == -1) {
+		if (ms < host->min_ping || host->min_ping == 0) {
 			host->min_ping = ms;
 		}
 
