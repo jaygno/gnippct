@@ -58,6 +58,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <sys/types.h>
 #include <ifaddrs.h>
 
+#include "tcpping.h"
+
 #define tcp_flag_isset(tcpptr, flag) (((tcpptr->th_flags) & (flag)) == (flag))
 
 /* Define the types of packets that we're sniffing for on the wire */
@@ -77,26 +79,13 @@ struct in_addr src_ip;
 int ttl = 64;
 char *myname;
 pid_t child_pid;
-int keep_going = 1;
 int verbose = 0;
 int notify_fd;
 struct timeval tv_timxceed;
 int sequence_offset = 0;
-char *dest_name;
-in_addr_t dest_ip = 0;
-u_short dest_port = 80;
 
-long long sum_ping = 0;
-long long sum_ping2 = 0;
-
-float min_ping = -1;
-float avg_ping = 0;
-float max_ping = 0;
-float mdev_ping = 0;
-int total_syns = 0;
-int total_synacks = 0;
-int total_rsts = 0;
-int successful_pings = 0;
+int host_num = 1;
+HOST_ENTRY host_array[32];
 
 /* Global handle to libnet -- libnet1 requires only one instantiation per process */
 libnet_t *l;
@@ -253,20 +242,26 @@ static long llsqrt(long long a)
 
 void print_stats(int junk)
 {
-    sum_ping /= successful_pings; 
-    sum_ping2 /= successful_pings; 
-    mdev_ping = (float)llsqrt(sum_ping2 - sum_ping * sum_ping)/1000;
 
-	printf("\n");
-	
-	printf("--- %s TCP ping statistics ---\n", dest_name);
-	total_syns = (total_syns != 0 ? total_syns : 1);
-	printf("%d SYN packets transmitted, %d SYN/ACKs and %d RSTs received, %.1f%% packet loss\n", 
-		total_syns, total_synacks, total_rsts, 
-		(1 - (successful_pings*1.0/total_syns))*100);
-	printf("round-trip min/avg/max/mdev = %.3f/%.3f/%.3f/%.3f ms\n",
-		min_ping, avg_ping, max_ping, mdev_ping);
+    int i = 0;
 
+    for (i = 0; i < host_num; i++)
+    {
+        host_array[i].sum_ping /= host_array[i].successful_pings; 
+        host_array[i].sum_ping2 /= host_array[i].successful_pings; 
+        host_array[i].mdev_ping = (float)llsqrt(host_array[i].sum_ping2 - host_array[i].sum_ping * host_array[i].sum_ping)/1000;
+
+        printf("\n");
+
+        printf("--- %s TCP ping statistics ---\n", dest_name);
+        host_array[i].total_syns = (host_array[i].total_syns != 0 ? host_array[i].total_syns : 1);
+        printf("%d SYN packets transmitted, %d SYN/ACKs and %d RSTs received, %.1f%% packet loss\n", 
+                host_array[i].total_syns, host_array[i].total_synacks, host_array[i].total_rsts, 
+                (1 - (host_array[i].successful_pings*1.0/host_array[i].total_syns))*100);
+        printf("round-trip min/avg/max/mdev = %.3f/%.3f/%.3f/%.3f ms\n",
+                host_array[i].min_ping, host_array[i].avg_ping, host_array[i].max_ping, host_array[i].mdev_ping);
+
+    }
 	exit(0);
 }
 
@@ -328,16 +323,31 @@ void show_packet(struct ip *ip, struct tcphdr *tcp, const struct pcap_pkthdr *he
 	}
 }
 
+int cmp_addr(struct in_addr addr)
+{
+    int hnt = 0;
+
+    for (hnt = 0; hnt < host_num; hnt++)
+    {
+        if (addr.s_addr == host_array[hnt].dest_ip)
+        {
+            return 0;
+        }
+    }
+
+    return -1;
+}
+
 /* Determine if this is a valid packet that we care about */
 int get_packet_type(struct ip *ip, struct tcphdr *tcp, struct icmp *icmp)
 {
 	/* In English:  "SYN packet that we sent out" */
-	if (ip->ip_dst.s_addr == dest_ip && ip->ip_p == IPPROTO_TCP && tcp_flag_isset(tcp, TH_SYN)) {
+	if ( ! cmp_addr(ip->ip_dst) && ip->ip_p == IPPROTO_TCP && tcp_flag_isset(tcp, TH_SYN)) {
 		return SYN_FROM_US;
 	}
 
 	/* In English:  "Response packet we're interested in, from the other host" */
-	else if (ip->ip_src.s_addr == dest_ip && ip->ip_p == IPPROTO_TCP &&
+	else if ( !cmp_addr(ip->ip_src) && ip->ip_p == IPPROTO_TCP &&
 			(
 				(tcp_flag_isset(tcp, TH_SYN) && tcp_flag_isset(tcp, TH_ACK)) || 
 				tcp_flag_isset(tcp, TH_RST)
@@ -352,6 +362,21 @@ int get_packet_type(struct ip *ip, struct tcphdr *tcp, struct icmp *icmp)
 	}
 
 	return 0;
+}
+
+HOST_ENTRY *get_host(struct in_addr addr)
+{
+    int hnt = 0;
+
+    for (hnt = 0; hnt < host_num; hnt++)
+    {
+        if (addr.s_addr == host_array[hnt].dest_ip)
+        {
+            return &host_array[hnt];
+        }
+    }
+
+    return NULL;
 }
 
 /* callback to pcap_loop() */
@@ -372,6 +397,8 @@ void got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *pa
 	int size_ip = sizeof(struct ip);
 	int size_tcp = sizeof(struct tcphdr);
 	int packet_type = 0;
+
+    HOST_ENTRY *host = NULL;
 
 	/* It looks like there's a "feature" somewhere where you don't
 	 * necessarily get Ethernet headers, or can't count on the underlying device to
@@ -410,15 +437,17 @@ void got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *pa
 		}
 	}
 
+
 	/* SYN packet that we sent out? */
 	if (packet_type == SYN_FROM_US) {
 		/* Store the send time of the packet */
+        host = get_host(ip->ip_dst);
 
 		seqno = ntohl(tcp->th_seq);
 		packetno = tcpseq_to_orderseq(ntohl(tcp->th_seq));
 		memcpy(&(sent_times[packetno % PACKET_HISTORY]), &(header->ts), sizeof(struct timeval));
 
-		total_syns++;
+		host->total_syns++;
 	}
 
 	/* SYN/ACK returned from them? */
@@ -447,6 +476,9 @@ void got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *pa
 			return;
 		}
 
+        host =get_host(ip->ip_src);
+
+
 		/* Mark that we saw this packet */
 		set_seenflag(ntohl(tcp->th_ack), 1);
 
@@ -464,12 +496,12 @@ void got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *pa
 
 		if (tcp_flag_isset(tcp, TH_SYN)) {
 			flags = "SYN/ACK";
-			total_synacks++;
+			host->total_synacks++;
 		}
 
 		else {
 			flags = "RST";
-			total_rsts++;
+			host->total_rsts++;
 		}
 
 		/* Raise the flag to the user that we saw it... */
@@ -484,19 +516,19 @@ void got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *pa
                   );
         }
 
-		if (ms < min_ping || min_ping == -1) {
-			min_ping = ms;
+		if (ms < host->min_ping || host->min_ping == -1) {
+			host->min_ping = ms;
 		}
 
-		if (ms > max_ping) {
-			max_ping = ms;
+		if (ms > host->max_ping) {
+			host->max_ping = ms;
 		}
 		
-		avg_ping = ((avg_ping * successful_pings) + ms)/(successful_pings+1);
-		successful_pings++;
+		host->avg_ping = ((host->avg_ping * host->successful_pings) + ms)/(host->successful_pings+1);
+		host->successful_pings++;
 
-        sum_ping += (long long)(ms * 1000);
-        sum_ping2 += (long long)(ms *1000) * (long long)(ms * 1000);
+        host->sum_ping += (long long)(ms * 1000);
+        host->sum_ping2 += (long long)(ms *1000) * (long long)(ms * 1000);
 
 		/* tell parent to continue */
 		write(notify_fd, "foo", 3);
@@ -513,7 +545,7 @@ void got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *pa
 		rettcp = (struct tcphdr *)(packet + frame_offset + size_ip + 8 + size_ip);
 
 		/* After we build the headers for ICMP, check the hosts / protocol / etc. */
-		if (retip->ip_dst.s_addr == dest_ip && retip->ip_p == IPPROTO_TCP && 
+		if ( !cmp_addr(retip->ip_dst) && retip->ip_p == IPPROTO_TCP && 
 			tcp_flag_isset(rettcp, TH_SYN)) {
 
 			r = gettimeofday(&tv_timxceed, NULL);
@@ -583,7 +615,7 @@ void sniff_packets(char *device_name)
 	 /* compile and apply the filter_expression */
 	snprintf(filter_expression, sizeof(filter_expression), 
 		"(host %s and port %u) or icmp[icmptype] == icmp-timxceed",
-		inet_ntoa2(dest_ip), dest_port
+		inet_ntoa2(host_array[0].dest_ip), dest_port
 	);
 
 	if (verbose) {
@@ -689,7 +721,7 @@ char *find_source_ip(char *dq)
 }
 
 
-void inject_syn_packet(int sequence)
+void inject_syn_packet(int sequence, HOST_ENTRY *tp_host)
 {
 	int c;
 	int r;
@@ -736,7 +768,7 @@ void inject_syn_packet(int sequence)
 		IPPROTO_TCP,                                 /* encap protocol */
 		0,                                           /* checksum */
 		src_ip.s_addr,                               /* source IP */
-		dest_ip,                                     /* destination IP */
+		tp_host->dest_ip,                                     /* destination IP */
 		NULL,                                        /* payload */
 		0,                                           /* payload size */
 		l,                                           /* libnet pointer */
@@ -770,6 +802,7 @@ int main(int argc, char *argv[])
 	/* Create a safe environment for setuid safety */
 	sanitize_environment();
 
+    int hnt;
 	int r;
 	int c;
 	char *device_name = NULL;
@@ -786,6 +819,7 @@ int main(int argc, char *argv[])
 	char *dest_host = NULL;
 
 	bzero(&src_ip, sizeof(struct in_addr));
+    memset(host_array, 0, sizeof(host_array));
 
 	while ((c = getopt(argc, argv, "qs:c:p:i:vI:t:S:")) != -1) {
 		switch (c) {
@@ -863,8 +897,9 @@ int main(int argc, char *argv[])
 		exit(1);
 	}
 
-	bcopy(he->h_addr, &dest_ip, sizeof(dest_ip));
-	if (dest_ip == INADDR_NONE) {
+	//bcopy(he->h_addr, &dest_ip, sizeof(dest_ip));
+	bcopy(he->h_addr, &host_array[0].dest_ip, sizeof(host_array[0].dest_ip));
+	if (host_array[0].dest_ip == INADDR_NONE) {
 		perror("bad address");
 		exit(1);
 	}
@@ -872,7 +907,7 @@ int main(int argc, char *argv[])
 	/* Get the dotted-quad from the resolved address as we need it later */
 	struct in_addr dest_addr;
 	bzero(&dest_addr, sizeof(struct in_addr));
-	dest_addr.s_addr = dest_ip;
+	dest_addr.s_addr = host_array[0].dest_ip;
 	dest_quad = inet_ntoa(dest_addr);
 	if (dest_quad == NULL) {
 		perror("Unable to convert returned address to dotted-quad; try pinging by IP address");
@@ -958,11 +993,18 @@ int main(int argc, char *argv[])
 
 		/* Event loop: either send, or whatever */
 		for (;;) {
-			inject_syn_packet(sequence++);
-			msleep(interval);
+
+            for (; count != 0; --count)
+            {
+                for (hnt=0; hnt < host_num; hnt++)
+                {
+			        inject_syn_packet(sequence++, &host_array[hnt]);
+			        msleep(interval);
+                }
+            }
 
 			/* See if we sent too many packets */
-			if (--count == 0) {
+			if (count == 0) {
 				/* tell child to display stats */
 				kill(child_pid, SIGINT);
 				/* make sure we wait until it died and closed */
