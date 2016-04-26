@@ -95,17 +95,6 @@ libnet_t *l;
 libnet_ptag_t tcp_pkt;
 libnet_ptag_t ip_pkt;
 
-/* There are problems with duplicate SYN/ACK packets and other oddities with
- * firewalls and established connections.  Rather than solve all of them, I'm
- * just going to count the first sequence-number response and ignore all
- * others.
- * 
- * Rather than store state for all results, we'll just have rolling state for a
- * 32-bit bitmask.  I guess something can go wrong but it will definitely be
- * more accurate than what we have today with negative loss rates :)
- */
-int32_t seen_response_bitflags = 0;
-
 /* Keep track of a recent history of packet send times to accurately calculate
  * when packets were received
  */
@@ -132,26 +121,6 @@ void handle_sigint(int junk)
 unsigned int tcpseq_to_orderseq(unsigned int tcpseq, int sequence_offset)
 {
 	return (unsigned int)((tcpseq - sequence_offset) / 100);
-}
-
-int get_seenflag(unsigned int tcpseq, int sequence_offset)
-{
-	unsigned int orderseq = tcpseq_to_orderseq(tcpseq, sequence_offset);
-	return ((seen_response_bitflags >> (orderseq % 32)) & 1);
-}
-
-void set_seenflag(unsigned int tcpseq, int flag, int sequence_offset)
-{
-	unsigned int orderseq = tcpseq_to_orderseq(tcpseq, sequence_offset);
-	unsigned int shift = orderseq % 32;
-
-	if (flag > 0) {
-		seen_response_bitflags = seen_response_bitflags | (1 << shift);
-	} else {
-		if (get_seenflag(tcpseq, sequence_offset) == 1) {
-			seen_response_bitflags = seen_response_bitflags ^ (1 << shift);
-		}
-	}
 }
 
 /* Sleep for a given number of milliseconds */
@@ -397,7 +366,7 @@ HOST_ENTRY *get_host(struct in_addr addr)
 /* callback to pcap_loop() */
 void got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *packet)
 {
-	int r, i;
+	int r;
 	int seqno, packetno;
 	struct ip *ip = NULL;
 	struct tcphdr *tcp = NULL;
@@ -438,10 +407,6 @@ void got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *pa
 
 	if (verbose) {
 		show_packet(ip, ip->ip_p == IPPROTO_TCP ? tcp : NULL, header, packet);
-		printf("\tSeen flags: ");
-		for (i = 0; i < 32; ++i) {
-			printf("%d", (seen_response_bitflags >> i) & 1);
-		}
 		printf("\n");
 	}
 
@@ -474,27 +439,7 @@ void got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *pa
 		}
 
         host =get_host(ip->ip_src);
-		/* Clear some of the rolling buffer.  This isn't perfect, but
- 		 * it's not bad. */
-		set_seenflag(ntohl(tcp->th_ack) + 1800, 0, host->sequence_offset);
-		set_seenflag(ntohl(tcp->th_ack) + 1700, 0, host->sequence_offset);
-		set_seenflag(ntohl(tcp->th_ack) + 1600, 0, host->sequence_offset);
-		set_seenflag(ntohl(tcp->th_ack) + 1500, 0, host->sequence_offset);
-
-		/* If we've seen this particular packet, back out of the room slowly
-		 * and close the door */
-		if ((ip->ip_p == IPPROTO_TCP) && get_seenflag(ntohl(tcp->th_ack), host->sequence_offset)) {
-			if (verbose) {
-				printf("Ignored packet; already seen one with seq=%d\n", 
-					tcpseq_to_orderseq(ntohl(tcp->th_ack) - 1, host->sequence_offset));
-			}
-
-			return;
-		}
 		
-        /* Mark that we saw this packet */
-		set_seenflag(ntohl(tcp->th_ack), 1, host->sequence_offset);
-
         if (tcp_flag_isset(tcp, TH_SYN)) {
 		    seqno = tcpseq_to_orderseq(ntohl(tcp->th_ack) - 1, host->sequence_offset);
 			flags = "SYN/ACK";
@@ -509,8 +454,17 @@ void got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *pa
 
 		/* Figure out when this particular packet was sent */
 		tv_syn = &(sent_times[seqno % PACKET_HISTORY]);
+
+        /* Maybe a duplicate seq and we have done it*/
+        if (tv_syn->tv_sec == 0)
+        {
+            return;
+        }
+
 		ms = (tv_synack.tv_sec - tv_syn->tv_sec) * 1000;
 		ms += (tv_synack.tv_usec - tv_syn->tv_usec)*1.0/1000;
+
+        memset(tv_syn, 0, sizeof(struct timeval));
 
 		/* Do some analysis on the returned packet... */
 		if (ms > 1000) {
@@ -546,7 +500,6 @@ void got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *pa
 
 		/* tell parent to continue */
 		write(notify_fd, "foo", 3);
-
 	}
 
 	/* In English: "Response packet we're interested in, but it's a Time Exceeded from some other host */
