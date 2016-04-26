@@ -71,11 +71,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #define F_QUIET 0x010
 #define MAX_PAYLOAD_S 1460
 
-#define MAX_HOST 80 
+#define MAX_HOST 1024 
 
 int options;
 
-int payload_s;
+int payload_s = 0;
 u_char payload[MAX_PAYLOAD_S] = {'a'};
 
 struct in_addr src_ip;
@@ -622,7 +622,7 @@ void sniff_packets(char *device_name)
 	 int r;
 	 pcap_t *handle;
 	 char errbuf[PCAP_ERRBUF_SIZE];
-	 char filter_expression[2048];
+	 char filter_expression[MAX_HOST*24+100];
 	 struct bpf_program filter;
 	 bpf_u_int32 mask;
 	 bpf_u_int32 net;
