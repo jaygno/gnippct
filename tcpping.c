@@ -77,6 +77,7 @@ u_char payload[MAX_PAYLOAD_S] = {'a'};
 
 struct in_addr src_ip;
 int ttl = 64;
+int timeout = 1;
 char *myname;
 pid_t child_pid;
 int verbose = 0;
@@ -247,19 +248,31 @@ void print_stats(int junk)
 
     for (i = 0; i < host_num; i++)
     {
-        host_array[i].sum_ping /= host_array[i].successful_pings; 
-        host_array[i].sum_ping2 /= host_array[i].successful_pings; 
-        host_array[i].mdev_ping = (float)llsqrt(host_array[i].sum_ping2 - host_array[i].sum_ping * host_array[i].sum_ping)/1000;
+        if (host_array[i].successful_pings > 0)
+        {
+            host_array[i].sum_ping /= host_array[i].successful_pings; 
+            host_array[i].sum_ping2 /= host_array[i].successful_pings; 
+            host_array[i].mdev_ping = (float)llsqrt(host_array[i].sum_ping2 - host_array[i].sum_ping * host_array[i].sum_ping)/1000;
 
-        printf("\n");
+            printf("\n");
 
-        printf("--- %s TCP ping statistics ---\n", host_array[i].dest_name);
-        host_array[i].total_syns = (host_array[i].total_syns != 0 ? host_array[i].total_syns : 1);
-        printf("%d SYN packets transmitted, %d SYN/ACKs and %d RSTs received, %.1f%% packet loss\n", 
-                host_array[i].total_syns, host_array[i].total_synacks, host_array[i].total_rsts, 
-                (1 - (host_array[i].successful_pings*1.0/host_array[i].total_syns))*100);
-        printf("round-trip min/avg/max/mdev = %.3f/%.3f/%.3f/%.3f ms\n",
-                host_array[i].min_ping, host_array[i].avg_ping, host_array[i].max_ping, host_array[i].mdev_ping);
+            printf("--- %s TCP ping statistics ---\n", host_array[i].dest_name);
+            host_array[i].total_syns = (host_array[i].total_syns != 0 ? host_array[i].total_syns : 1);
+            printf("%d SYN packets transmitted, %d SYN/ACKs and %d RSTs received, %.1f%% packet loss\n", 
+                    host_array[i].total_syns, host_array[i].total_synacks, host_array[i].total_rsts, 
+                    (1 - (host_array[i].successful_pings*1.0/host_array[i].total_syns))*100);
+            printf("round-trip min/avg/max/mdev = %.3f/%.3f/%.3f/%.3f ms\n",
+                    host_array[i].min_ping, host_array[i].avg_ping, host_array[i].max_ping, host_array[i].mdev_ping);
+        }
+        else
+        {
+            printf("\n");
+
+            printf("--- %s TCP ping statistics ---\n", host_array[i].dest_name);
+            host_array[i].total_syns = (host_array[i].total_syns != 0 ? host_array[i].total_syns : 1);
+            printf("%d SYN packets transmitted, %d SYN/ACKs and %d RSTs received, %d%% packet loss\n", 
+                    host_array[i].total_syns, 0, 0, 100);
+        }
 
     }
 	exit(0);
@@ -817,9 +830,25 @@ void inject_syn_packet(int sequence, HOST_ENTRY *tp_host)
 
 void usage()
 {
-	fprintf(stderr, "%s: [-v] [-c count] [-p port] [-i interval] [-I interface] [-t ttl] [-S srcaddress] [-q] [-s packetsize] [-f filename] remote_host\n", myname);
-	exit(0);
-}
+    FILE *out = stderr;
+	fprintf(stderr, "Usage : %s [-v] [-c count] [-p port] [-i interval] [-I interface] [-t ttl] [-S srcaddress] [-T timeout] [-q] [-s packetsize] [-f filename] remote_host\n", myname);
+    fprintf(out, "\n" );
+    fprintf(out, "Options:\n" );
+    fprintf(out, "   -h         this help\n" );
+    fprintf(out, "   -c n       count of pings to send to each target (default infinity)\n");  
+    fprintf(out, "   -f file    read list of targets from a file\n" );
+    fprintf(out, "   -t n       Set the IP TTL value (Time To Live hops)\n");
+    fprintf(out, "   -i n       interval between sending ping packets (in sec) (default %d)\n", 1);
+    fprintf(out, "   -I if      bind to a particular interface\n");
+    fprintf(out, "   -p port    set the target port (default %d)\n", 80);
+    fprintf(out, "   -q         quiet (don't show per-target/per-ping results)\n" );
+    fprintf(out, "   -s         set the payload size (default %d)\n", 0);
+    fprintf(out, "   -S addr    set source address\n" );
+    fprintf(out, "   -T n       individual target initial timeout (in sec) (default %d)\n", 1);
+    fprintf(out, "   -v         be verbose\n" );
+    fprintf(out, "\n");
+    exit(0);
+} /* usage() */
 
 void add_host(char *dst_host)
 {
@@ -878,7 +907,7 @@ int main(int argc, char *argv[])
 	bzero(&src_ip, sizeof(struct in_addr));
     memset(host_array, 0, sizeof(host_array));
 
-	while ((c = getopt(argc, argv, "qs:c:p:f:i:vI:t:S:")) != -1) {
+	while ((c = getopt(argc, argv, "hqs:c:p:f:i:vI:t:S:T:")) != -1) {
 		switch (c) {
 			case 'c':
 				count = atoi(optarg);
@@ -898,6 +927,9 @@ int main(int argc, char *argv[])
                 break;
 			case 'p':
 				dest_port = atoi(optarg);
+				break;
+			case 'h':
+                usage();
 				break;
 			case 'i':
 				interval = (long)(atof(optarg) * 1000.0);
@@ -927,6 +959,9 @@ int main(int argc, char *argv[])
 				if (inet_aton(src_quad, &src_ip) == 0) {
 					fprintf(stderr, "Invalid source address\n");
 				}
+				break;
+			case 'T':
+				timeout = atoi(optarg) * 1000;
 				break;
 			default:
 				usage();
@@ -1082,6 +1117,7 @@ int main(int argc, char *argv[])
 
 			/* See if we sent too many packets */
 			if (count == 0) {
+			    msleep(timeout);
 				/* tell child to display stats */
 				kill(child_pid, SIGINT);
 				/* make sure we wait until it died and closed */
