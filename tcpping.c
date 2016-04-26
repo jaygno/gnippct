@@ -111,7 +111,7 @@ int32_t seen_response_bitflags = 0;
  * when packets were received
  */
 
-#define PACKET_HISTORY 1024
+#define PACKET_HISTORY 4096
 struct timeval sent_times[PACKET_HISTORY];
 
 void handle_sigalrm(int junk)
@@ -491,15 +491,25 @@ void got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *pa
 
 			return;
 		}
+		
+        /* Mark that we saw this packet */
+		set_seenflag(ntohl(tcp->th_ack), 1);
 
         host =get_host(ip->ip_src);
 
+        if (tcp_flag_isset(tcp, TH_SYN)) {
+		    seqno = tcpseq_to_orderseq(ntohl(tcp->th_ack) - 1);
+			flags = "SYN/ACK";
+			host->total_synacks++;
+		}
 
-		/* Mark that we saw this packet */
-		set_seenflag(ntohl(tcp->th_ack), 1);
+		else {
+		    seqno = tcpseq_to_orderseq(ntohl(tcp->th_ack) - 1 - payload_s);
+			flags = "RST";
+			host->total_rsts++;
+		}
 
 		/* Figure out when this particular packet was sent */
-		seqno = tcpseq_to_orderseq(ntohl(tcp->th_ack) - 1);
 		tv_syn = &(sent_times[seqno % PACKET_HISTORY]);
 		ms = (tv_synack.tv_sec - tv_syn->tv_sec) * 1000;
 		ms += (tv_synack.tv_usec - tv_syn->tv_usec)*1.0/1000;
@@ -508,16 +518,6 @@ void got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *pa
 		if (ms > 1000) {
 			units = "s";
 			ms /= 1000;
-		}
-
-		if (tcp_flag_isset(tcp, TH_SYN)) {
-			flags = "SYN/ACK";
-			host->total_synacks++;
-		}
-
-		else {
-			flags = "RST";
-			host->total_rsts++;
 		}
 
 		/* Raise the flag to the user that we saw it... */
