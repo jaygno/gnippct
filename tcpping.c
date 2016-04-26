@@ -69,7 +69,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #define ICMP_TIMEEXCEEDED 3
 
 #define F_QUIET 0x010
-#define MAX_PAYLOAD_S 1460 
+#define MAX_PAYLOAD_S 1460
+
+#define MAX_HOST 80 
+
 int options;
 
 int payload_s;
@@ -86,7 +89,7 @@ struct timeval tv_timxceed;
 int sequence_offset = 0;
 
 int host_num = 0;
-HOST_ENTRY host_array[32];
+HOST_ENTRY host_array[MAX_HOST];
 
 /* Global handle to libnet -- libnet1 requires only one instantiation per process */
 libnet_t *l;
@@ -605,17 +608,13 @@ void cmb_filter(char *filter_expression, int length)
     {
 	    ret = snprintf(filter_expression, length, 
 		" or host %s", inet_ntoa2(host_array[i].dest_ip) );
-        if (ret < length)
-        {
-            //fastweb error
-        }
+
         filter_expression += ret;
         length -= ret;
     }
 
 	snprintf(filter_expression, length, 
 		" and port %u) or icmp[icmptype] == icmp-timxceed", dest_port);
-
 }
 
 void sniff_packets(char *device_name)
@@ -623,7 +622,7 @@ void sniff_packets(char *device_name)
 	 int r;
 	 pcap_t *handle;
 	 char errbuf[PCAP_ERRBUF_SIZE];
-	 char filter_expression[1024];
+	 char filter_expression[2048];
 	 struct bpf_program filter;
 	 bpf_u_int32 mask;
 	 bpf_u_int32 net;
@@ -633,7 +632,7 @@ void sniff_packets(char *device_name)
 		 fprintf(stderr, "pcap_lookupnet: %s\n", errbuf);
 		 exit(1);
 	 }
-	 
+	
 	 handle = pcap_open_live(device_name, BUFSIZ, 0, 0, errbuf);
 	 if (!handle) {
 		 fprintf(stderr, "pcap_open_live: %s\n", errbuf);
@@ -856,6 +855,12 @@ void add_host(char *dst_host)
     char *dest_quad = NULL;
     struct hostent *he = NULL;
 
+    if (host_num == MAX_HOST)
+    {
+        fprintf(stderr, " %d host. %s", host_num, "too many host (max 80)");
+        exit(1);
+    }
+
 	he = gethostbyname(dst_host);
 	if (!he) {
 		herror("gethostbyname");
@@ -999,7 +1004,8 @@ int main(int argc, char *argv[])
 
         if( !ping_file )
         {
-            //fastweb errno_crash_and_burn( "fopen" );
+            perror("-f");
+            exit(1);
         }
 
 
