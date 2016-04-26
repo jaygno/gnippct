@@ -84,7 +84,7 @@ int notify_fd;
 struct timeval tv_timxceed;
 int sequence_offset = 0;
 
-int host_num = 1;
+int host_num = 0;
 HOST_ENTRY host_array[32];
 
 /* Global handle to libnet -- libnet1 requires only one instantiation per process */
@@ -253,7 +253,7 @@ void print_stats(int junk)
 
         printf("\n");
 
-        printf("--- %s TCP ping statistics ---\n", dest_name);
+        printf("--- %s TCP ping statistics ---\n", host_array[i].dest_name);
         host_array[i].total_syns = (host_array[i].total_syns != 0 ? host_array[i].total_syns : 1);
         printf("%d SYN packets transmitted, %d SYN/ACKs and %d RSTs received, %.1f%% packet loss\n", 
                 host_array[i].total_syns, host_array[i].total_synacks, host_array[i].total_rsts, 
@@ -578,6 +578,33 @@ void got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *pa
 	}
 }
 
+void cmb_filter(char *filter_expression, int length)
+{
+    int i = 0;
+    int ret = 0;
+
+	ret = snprintf(filter_expression, length, 
+		"(host %s", inet_ntoa2(host_array[0].dest_ip) );
+    filter_expression += ret;
+    length -= ret;
+
+    for (i=1; i<host_num; i++)
+    {
+	    ret = snprintf(filter_expression, length, 
+		" or host %s", inet_ntoa2(host_array[i].dest_ip) );
+        if (ret < length)
+        {
+            //fastweb error
+        }
+        filter_expression += ret;
+        length -= ret;
+    }
+
+	snprintf(filter_expression, length, 
+		" and port %u) or icmp[icmptype] == icmp-timxceed", dest_port);
+
+}
+
 void sniff_packets(char *device_name)
 {
 	 int r;
@@ -612,11 +639,8 @@ void sniff_packets(char *device_name)
 		exit(1);
 	}
 
+    cmb_filter(filter_expression, sizeof(filter_expression));
 	 /* compile and apply the filter_expression */
-	snprintf(filter_expression, sizeof(filter_expression), 
-		"(host %s and port %u) or icmp[icmptype] == icmp-timxceed",
-		inet_ntoa2(host_array[0].dest_ip), dest_port
-	);
 
 	if (verbose) {
 		printf("pcap filter expression: %s\n", filter_expression);
@@ -793,8 +817,44 @@ void inject_syn_packet(int sequence, HOST_ENTRY *tp_host)
 
 void usage()
 {
-	fprintf(stderr, "%s: [-v] [-c count] [-p port] [-i interval] [-I interface] [-t ttl] [-S srcaddress] [-q] [-s packetsize] remote_host\n", myname);
+	fprintf(stderr, "%s: [-v] [-c count] [-p port] [-i interval] [-I interface] [-t ttl] [-S srcaddress] [-q] [-s packetsize] [-f filename] remote_host\n", myname);
 	exit(0);
+}
+
+void add_host(char *dst_host)
+{
+	struct in_addr dest_addr;
+    char *dest_quad = NULL;
+    struct hostent *he = NULL;
+
+	he = gethostbyname(dst_host);
+	if (!he) {
+		herror("gethostbyname");
+		exit(1);
+	}
+
+	if (!he->h_addr) {
+		fprintf(stderr, "No address associated with name: %s\n", dst_host);
+		exit(1);
+	}
+
+	bcopy(he->h_addr, &host_array[host_num].dest_ip, sizeof(in_addr_t));
+	if (host_array[host_num].dest_ip == INADDR_NONE) {
+		perror("bad address");
+		exit(1);
+	}
+    host_array[host_num].dest_name = strdup(he->h_name);
+
+	bzero(&dest_addr, sizeof(struct in_addr));
+	dest_addr.s_addr = host_array[host_num].dest_ip;
+	dest_quad = inet_ntoa(dest_addr);
+	if (dest_quad == NULL) {
+		perror("Unable to convert returned address to dotted-quad; try pinging by IP address");
+		exit(1);
+	}
+	host_array[host_num].dest_quad = strdup(dest_quad);
+
+    host_num++;
 }
 
 int main(int argc, char *argv[])
@@ -808,23 +868,23 @@ int main(int argc, char *argv[])
 	char *device_name = NULL;
 	int count = -1;
 	long interval = 1000;
-	struct hostent *he;
 	int pipefds[2];
 	char junk[256];
 	int sequence = 1;
 	char *src_quad = NULL;
 
 	myname = argv[0];
-	char *dest_quad = NULL;
-	char *dest_host = NULL;
 
 	bzero(&src_ip, sizeof(struct in_addr));
     memset(host_array, 0, sizeof(host_array));
 
-	while ((c = getopt(argc, argv, "qs:c:p:i:vI:t:S:")) != -1) {
+	while ((c = getopt(argc, argv, "qs:c:p:f:i:vI:t:S:")) != -1) {
 		switch (c) {
 			case 'c':
 				count = atoi(optarg);
+				break;
+			case 'f':
+				filename = optarg;
 				break;
 			case 'q':
 				options |= F_QUIET;
@@ -876,48 +936,64 @@ int main(int argc, char *argv[])
 	argc -= optind;
 	argv += optind;
 
-	if (argc != 1) {
-		usage();
-	}
+    if ( (*argv && filename) || (!*argv && !filename) )
+    {
+        usage();
+    }
 
 	if (geteuid() != 0) {
 		fprintf(stderr, "You must run %s as root.\n", myname);
 		exit(1);
 	}
 
-	dest_host = argv[0];
-	he = gethostbyname(dest_host);
-	if (!he) {
-		herror("gethostbyname");
-		exit(1);
-	}
+    if( *argv )
+    {
+        while( *argv )
+        {
+            add_host( *argv );
+            ++argv;
+        }
+    }
+    else if( filename )
+    {
+        FILE *ping_file;
+        char line[132];
+        char host[132];
 
-	if (!he->h_addr) {
-		fprintf(stderr, "No address associated with name: %s\n", argv[0]);
-		exit(1);
-	}
+        ping_file = fopen( filename, "r" );
 
-	//bcopy(he->h_addr, &dest_ip, sizeof(dest_ip));
-	bcopy(he->h_addr, &host_array[0].dest_ip, sizeof(host_array[0].dest_ip));
-	if (host_array[0].dest_ip == INADDR_NONE) {
-		perror("bad address");
-		exit(1);
-	}
+        if( !ping_file )
+        {
+            //fastweb errno_crash_and_burn( "fopen" );
+        }
 
-	/* Get the dotted-quad from the resolved address as we need it later */
-	struct in_addr dest_addr;
-	bzero(&dest_addr, sizeof(struct in_addr));
-	dest_addr.s_addr = host_array[0].dest_ip;
-	dest_quad = inet_ntoa(dest_addr);
-	if (dest_quad == NULL) {
-		perror("Unable to convert returned address to dotted-quad; try pinging by IP address");
-		exit(1);
-	}
-	dest_quad = strdup(dest_quad);
+
+        while( fgets( line, sizeof(line), ping_file ) )
+        {
+            if( sscanf( line, "%s", host ) != 1 )
+                continue;
+
+            if( ( !*host ) || ( host[0] == '#' ) )  /* magic to avoid comments */
+                continue;
+
+            add_host(host);
+        }/* WHILE */
+
+        fclose( ping_file );
+    }
+    else
+    {
+        usage();
+    }
+
+    if ( !host_num )
+    {
+        exit(1);
+    }
 
 	/* Figure out the source IP if we didn't specify one */
 	if (src_ip.s_addr == 0) {
-		src_quad = find_source_ip(dest_quad);
+		src_quad = find_source_ip(host_array[0].dest_quad);
 		if (src_quad == NULL) {
 			fprintf(stderr, "Unable to calculate source IP for tcp pings (needed for device capture).  Try specifying a source IP address with -S\n");
 			exit(1);
@@ -947,10 +1023,6 @@ int main(int argc, char *argv[])
 		exit(1); 
 	}
 
-	dest_name = he->h_name;
-	printf("TCP PING %s (%s:%u)\n", dest_name, 
-		   dest_quad, dest_port
-	);
 
 	/* start seq# somewhere random so we're not SO obvious */
 	srandom(time(NULL));
@@ -998,6 +1070,11 @@ int main(int argc, char *argv[])
             {
                 for (hnt=0; hnt < host_num; hnt++)
                 {
+                    if (!(options & F_QUIET))
+                    {
+                        printf("TCP PING %s (%s:%u)\n", host_array[hnt].dest_name, 
+                            host_array[hnt].dest_quad, dest_port);
+                    }
 			        inject_syn_packet(sequence++, &host_array[hnt]);
 			        msleep(interval);
                 }

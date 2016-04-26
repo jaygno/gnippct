@@ -3,11 +3,13 @@
 
 #include <netinet/ip.h>
 
-char *dest_name;
+char *filename = NULL;
 u_short dest_port = 80;
 
 typedef struct host_entry
 {
+char *dest_name;
+char *dest_quad;
 in_addr_t dest_ip;
 
 long long sum_ping;
