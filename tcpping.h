@@ -8,6 +8,7 @@ u_short dest_port = 80;
 
 typedef struct host_entry
 {
+int sequence_offset;
 char *dest_name;
 char *dest_quad;
 in_addr_t dest_ip;

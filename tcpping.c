@@ -86,7 +86,6 @@ pid_t child_pid;
 int verbose = 0;
 int notify_fd;
 struct timeval tv_timxceed;
-int sequence_offset = 0;
 
 int host_num = 0;
 HOST_ENTRY host_array[MAX_HOST];
@@ -130,26 +129,26 @@ void handle_sigint(int junk)
 
 /* Some functions relating to keeping track of sequence state */
 
-unsigned int tcpseq_to_orderseq(unsigned int tcpseq)
+unsigned int tcpseq_to_orderseq(unsigned int tcpseq, int sequence_offset)
 {
 	return (unsigned int)((tcpseq - sequence_offset) / 100);
 }
 
-int get_seenflag(unsigned int tcpseq)
+int get_seenflag(unsigned int tcpseq, int sequence_offset)
 {
-	unsigned int orderseq = tcpseq_to_orderseq(tcpseq);
+	unsigned int orderseq = tcpseq_to_orderseq(tcpseq, sequence_offset);
 	return ((seen_response_bitflags >> (orderseq % 32)) & 1);
 }
 
-void set_seenflag(unsigned int tcpseq, int flag)
+void set_seenflag(unsigned int tcpseq, int flag, int sequence_offset)
 {
-	unsigned int orderseq = tcpseq_to_orderseq(tcpseq);
+	unsigned int orderseq = tcpseq_to_orderseq(tcpseq, sequence_offset);
 	unsigned int shift = orderseq % 32;
 
 	if (flag > 0) {
 		seen_response_bitflags = seen_response_bitflags | (1 << shift);
 	} else {
-		if (get_seenflag(tcpseq) == 1) {
+		if (get_seenflag(tcpseq, sequence_offset) == 1) {
 			seen_response_bitflags = seen_response_bitflags ^ (1 << shift);
 		}
 	}
@@ -460,7 +459,7 @@ void got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *pa
         host = get_host(ip->ip_dst);
 
 		seqno = ntohl(tcp->th_seq);
-		packetno = tcpseq_to_orderseq(ntohl(tcp->th_seq));
+		packetno = tcpseq_to_orderseq(ntohl(tcp->th_seq), host->sequence_offset);
 		memcpy(&(sent_times[packetno % PACKET_HISTORY]), &(header->ts), sizeof(struct timeval));
 
 		host->total_syns++;
@@ -474,37 +473,36 @@ void got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *pa
 			exit(1);
 		}
 
+        host =get_host(ip->ip_src);
 		/* Clear some of the rolling buffer.  This isn't perfect, but
  		 * it's not bad. */
-		set_seenflag(ntohl(tcp->th_ack) + 1800, 0);
-		set_seenflag(ntohl(tcp->th_ack) + 1700, 0);
-		set_seenflag(ntohl(tcp->th_ack) + 1600, 0);
-		set_seenflag(ntohl(tcp->th_ack) + 1500, 0);
+		set_seenflag(ntohl(tcp->th_ack) + 1800, 0, host->sequence_offset);
+		set_seenflag(ntohl(tcp->th_ack) + 1700, 0, host->sequence_offset);
+		set_seenflag(ntohl(tcp->th_ack) + 1600, 0, host->sequence_offset);
+		set_seenflag(ntohl(tcp->th_ack) + 1500, 0, host->sequence_offset);
 
 		/* If we've seen this particular packet, back out of the room slowly
 		 * and close the door */
-		if ((ip->ip_p == IPPROTO_TCP) && get_seenflag(ntohl(tcp->th_ack))) {
+		if ((ip->ip_p == IPPROTO_TCP) && get_seenflag(ntohl(tcp->th_ack), host->sequence_offset)) {
 			if (verbose) {
 				printf("Ignored packet; already seen one with seq=%d\n", 
-					tcpseq_to_orderseq(ntohl(tcp->th_ack) - 1));
+					tcpseq_to_orderseq(ntohl(tcp->th_ack) - 1, host->sequence_offset));
 			}
 
 			return;
 		}
 		
         /* Mark that we saw this packet */
-		set_seenflag(ntohl(tcp->th_ack), 1);
-
-        host =get_host(ip->ip_src);
+		set_seenflag(ntohl(tcp->th_ack), 1, host->sequence_offset);
 
         if (tcp_flag_isset(tcp, TH_SYN)) {
-		    seqno = tcpseq_to_orderseq(ntohl(tcp->th_ack) - 1);
+		    seqno = tcpseq_to_orderseq(ntohl(tcp->th_ack) - 1, host->sequence_offset);
 			flags = "SYN/ACK";
 			host->total_synacks++;
 		}
 
 		else {
-		    seqno = tcpseq_to_orderseq(ntohl(tcp->th_ack) - 1 - payload_s);
+		    seqno = tcpseq_to_orderseq(ntohl(tcp->th_ack) - 1 - payload_s, host->sequence_offset);
 			flags = "RST";
 			host->total_rsts++;
 		}
@@ -526,7 +524,7 @@ void got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *pa
             printf("%s from %s: seq=%u ttl=%d time=%.3f%s\n", 
                     flags,
                     inet_ntoa(ip->ip_src), 
-                    tcpseq_to_orderseq(ntohl(tcp->th_ack) - 1),
+                    tcpseq_to_orderseq(ntohl(tcp->th_ack) - 1, host->sequence_offset),
                     ip->ip_ttl,
                     ms, units
                   );
@@ -570,7 +568,7 @@ void got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *pa
 				exit(1);
 			}
 			/* Figure out when this particular packet was sent */
-			seqno = tcpseq_to_orderseq(ntohl(tcp->th_ack) - 1);
+			seqno = tcpseq_to_orderseq(ntohl(tcp->th_ack) - 1, host->sequence_offset);
 			tv_syn = &(sent_times[seqno % PACKET_HISTORY]);
 			ms = (tv_synack.tv_sec - tv_syn->tv_sec) * 1000;
 			ms += (tv_synack.tv_usec - tv_syn->tv_usec)*1.0/1000;
@@ -776,7 +774,7 @@ void inject_syn_packet(int sequence, HOST_ENTRY *tp_host)
 	r = libnet_build_tcp(
 		random() % 65536,                                 /* source port */
 		dest_port,                                        /* destination port */
-		sequence_offset + (sequence*100),                 /* sequence number */
+		tp_host->sequence_offset + (sequence*100),                 /* sequence number */
 		0,                                                /* acknowledgement num */
 		TH_SYN,                                           /* control flags */
 		32768,                                            /* window size */
@@ -887,6 +885,9 @@ void add_host(char *dst_host)
 		exit(1);
 	}
 	host_array[host_num].dest_quad = strdup(dest_quad);
+	
+	/* start seq# somewhere random so we're not SO obvious */
+    host_array[host_num].sequence_offset = random();
 
     host_num++;
 }
@@ -1065,9 +1066,6 @@ int main(int argc, char *argv[])
 	}
 
 
-	/* start seq# somewhere random so we're not SO obvious */
-	srandom(time(NULL));
-	sequence_offset = random();
 
 	/* pipe is to synchronize with our child */
 	r = pipe(pipefds);
