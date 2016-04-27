@@ -3,12 +3,8 @@
 
 #include <netinet/ip.h>
 
-char *filename = NULL;
-u_short dest_port = 80;
-
 typedef struct host_entry
 {
-int sequence_offset;
 char *dest_name;
 char *dest_quad;
 in_addr_t dest_ip;
@@ -26,7 +22,6 @@ int total_synacks;
 int total_rsts;
 
 int successful_pings;
-
 } HOST_ENTRY;
 
 

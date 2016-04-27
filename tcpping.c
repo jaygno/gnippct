@@ -69,11 +69,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #define ICMP_TIMEEXCEEDED 3
 
 #define F_QUIET 0x010
-#define MAX_PAYLOAD_S 1460
 
+#define MAX_PAYLOAD_S 1460
+#define PACKET_HISTORY 1461 
 #define MAX_HOST 1024 
 
-int options;
 
 int payload_s = 0;
 u_char payload[MAX_PAYLOAD_S] = {'a'};
@@ -81,13 +81,20 @@ u_char payload[MAX_PAYLOAD_S] = {'a'};
 struct in_addr src_ip;
 int ttl = 64;
 int timeout = 1;
+int host_num = 0;
+int sequence_offset = 0;
+
 char *myname;
+
 pid_t child_pid;
+int options;
 int verbose = 0;
 int notify_fd;
 struct timeval tv_timxceed;
 
-int host_num = 0;
+char *filename = NULL;
+u_short dest_port = 80;
+
 HOST_ENTRY host_array[MAX_HOST];
 
 /* Global handle to libnet -- libnet1 requires only one instantiation per process */
@@ -99,7 +106,6 @@ libnet_ptag_t ip_pkt;
  * when packets were received
  */
 
-#define PACKET_HISTORY 4096
 struct timeval sent_times[PACKET_HISTORY];
 
 void handle_sigalrm(int junk)
@@ -118,9 +124,9 @@ void handle_sigint(int junk)
 
 /* Some functions relating to keeping track of sequence state */
 
-unsigned int tcpseq_to_orderseq(unsigned int tcpseq, int sequence_offset)
+unsigned int tcpseq_to_orderseq(unsigned int tcpseq)
 {
-	return (unsigned int)((tcpseq - sequence_offset) / 100);
+	return (unsigned int)((tcpseq - sequence_offset) / (MAX_PAYLOAD_S + 1));
 }
 
 /* Sleep for a given number of milliseconds */
@@ -424,7 +430,7 @@ void got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *pa
         host = get_host(ip->ip_dst);
 
 		seqno = ntohl(tcp->th_seq);
-		packetno = tcpseq_to_orderseq(ntohl(tcp->th_seq), host->sequence_offset);
+		packetno = tcpseq_to_orderseq(ntohl(tcp->th_seq));
 		memcpy(&(sent_times[packetno % PACKET_HISTORY]), &(header->ts), sizeof(struct timeval));
 
 		host->total_syns++;
@@ -441,13 +447,13 @@ void got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *pa
         host =get_host(ip->ip_src);
 		
         if (tcp_flag_isset(tcp, TH_SYN)) {
-		    seqno = tcpseq_to_orderseq(ntohl(tcp->th_ack) - 1, host->sequence_offset);
+		    seqno = tcpseq_to_orderseq(ntohl(tcp->th_ack) - 1);
 			flags = "SYN/ACK";
 			host->total_synacks++;
 		}
 
 		else {
-		    seqno = tcpseq_to_orderseq(ntohl(tcp->th_ack) - 1 - payload_s, host->sequence_offset);
+		    seqno = tcpseq_to_orderseq(ntohl(tcp->th_ack) - 1 - payload_s);
 			flags = "RST";
 			host->total_rsts++;
 		}
@@ -478,7 +484,7 @@ void got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *pa
             printf("%s from %s: seq=%u ttl=%d time=%.3f%s\n", 
                     flags,
                     inet_ntoa(ip->ip_src), 
-                    tcpseq_to_orderseq(ntohl(tcp->th_ack) - 1, host->sequence_offset),
+                    ntohl(tcp->th_ack) - 1,
                     ip->ip_ttl,
                     ms, units
                   );
@@ -521,7 +527,7 @@ void got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *pa
 				exit(1);
 			}
 			/* Figure out when this particular packet was sent */
-			seqno = tcpseq_to_orderseq(ntohl(tcp->th_ack) - 1, host->sequence_offset);
+			seqno = tcpseq_to_orderseq(ntohl(tcp->th_ack) - 1);
 			tv_syn = &(sent_times[seqno % PACKET_HISTORY]);
 			ms = (tv_synack.tv_sec - tv_syn->tv_sec) * 1000;
 			ms += (tv_synack.tv_usec - tv_syn->tv_usec)*1.0/1000;
@@ -727,7 +733,7 @@ void inject_syn_packet(int sequence, HOST_ENTRY *tp_host)
 	r = libnet_build_tcp(
 		random() % 65536,                                 /* source port */
 		dest_port,                                        /* destination port */
-		tp_host->sequence_offset + (sequence*100),                 /* sequence number */
+		sequence_offset + (sequence*(MAX_PAYLOAD_S+1)),                 /* sequence number */
 		0,                                                /* acknowledgement num */
 		TH_SYN,                                           /* control flags */
 		32768,                                            /* window size */
@@ -839,9 +845,6 @@ void add_host(char *dst_host)
 	}
 	host_array[host_num].dest_quad = strdup(dest_quad);
 	
-	/* start seq# somewhere random so we're not SO obvious */
-    host_array[host_num].sequence_offset = random();
-
     host_num++;
 }
 
@@ -1019,6 +1022,9 @@ int main(int argc, char *argv[])
 	}
 
 
+    srandom(time(NULL));
+    sequence_offset = random();
+         
 
 	/* pipe is to synchronize with our child */
 	r = pipe(pipefds);
