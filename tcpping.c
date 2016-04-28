@@ -60,53 +60,6 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include "tcpping.h"
 
-#define tcp_flag_isset(tcpptr, flag) (((tcpptr->th_flags) & (flag)) == (flag))
-
-/* Define the types of packets that we're sniffing for on the wire */
-#define UNINTERESTING 0
-#define SYN_FROM_US 1
-#define SYNACK_FROM_THEM 2
-#define ICMP_TIMEEXCEEDED 3
-
-#define F_QUIET 0x010
-
-#define MAX_PAYLOAD_S 1460
-#define PACKET_HISTORY 1461 
-#define MAX_HOST 1024 
-
-
-int payload_s = 0;
-u_char payload[MAX_PAYLOAD_S] = {'a'};
-
-struct in_addr src_ip;
-int ttl = 64;
-int timeout = 1;
-int host_num = 0;
-int sequence_offset = 0;
-
-char *myname;
-
-pid_t child_pid;
-int options;
-int verbose = 0;
-int notify_fd;
-struct timeval tv_timxceed;
-
-char *filename = NULL;
-u_short dest_port = 80;
-
-HOST_ENTRY host_array[MAX_HOST];
-
-/* Global handle to libnet -- libnet1 requires only one instantiation per process */
-libnet_t *l;
-libnet_ptag_t tcp_pkt;
-libnet_ptag_t ip_pkt;
-
-/* Keep track of a recent history of packet send times to accurately calculate
- * when packets were received
- */
-
-struct timeval sent_times[PACKET_HISTORY];
 
 void handle_sigalrm(int junk)
 {
@@ -139,15 +92,6 @@ int msleep(long duration)
 	wait_time.tv_nsec = (long)(duration % 1000) * 1000000;
 
 	return nanosleep(&wait_time, &remainder);
-}
-
-/* Function to determine the millisecond-difference between two timestamps */
-long timestamp_difference(const struct timeval *one, const struct timeval *two)
-{
-	long difference = 0;
-	difference += ((one->tv_sec - two->tv_sec) * 1000);
-	difference += ((one->tv_usec - two->tv_usec) / 1000);
-	return difference;
 }
 
 /* Function to validate that the given device is a valid one according to pcap;
@@ -312,6 +256,29 @@ void show_packet(struct ip *ip, struct tcphdr *tcp, const struct pcap_pkthdr *he
 		printf("\n");
 	}
 }
+
+void usage()
+{
+    FILE *out = stderr;
+	fprintf(stderr, "Usage : %s [-v] [-c count] [-p port] [-i interval] [-I interface] [-t ttl] [-S srcaddress] [-T timeout] [-q] [-s packetsize] [-f filename] remote_host\n", myname);
+    fprintf(out, "\n" );
+    fprintf(out, "Options:\n" );
+    fprintf(out, "   -h         this help\n" );
+    fprintf(out, "   -c n       count of pings to send to each target (default infinity)\n");  
+    fprintf(out, "   -f file    read list of targets from a file\n" );
+    fprintf(out, "   -t n       Set the IP TTL value (Time To Live hops)\n");
+    fprintf(out, "   -i n       interval between sending ping packets (in sec) (default %d)\n", 1);
+    fprintf(out, "   -I if      bind to a particular interface\n");
+    fprintf(out, "   -p port    set the target port (default %d)\n", 80);
+    fprintf(out, "   -q         quiet (don't show per-target/per-ping results)\n" );
+    fprintf(out, "   -s n       set the payload size (default %d)\n", 0);
+    fprintf(out, "   -S addr    set source address\n" );
+    fprintf(out, "   -T n       individual target initial timeout (in sec) (default %d)\n", 1);
+    fprintf(out, "   -v         be verbose\n" );
+    fprintf(out, "\n");
+    exit(0);
+} /* usage() */
+
 
 int cmp_addr(struct in_addr addr)
 {
@@ -783,28 +750,6 @@ void inject_syn_packet(int sequence, HOST_ENTRY *tp_host)
 	/* Get ready for the next packet */
 	libnet_clear_packet(l);
 }
-
-void usage()
-{
-    FILE *out = stderr;
-	fprintf(stderr, "Usage : %s [-v] [-c count] [-p port] [-i interval] [-I interface] [-t ttl] [-S srcaddress] [-T timeout] [-q] [-s packetsize] [-f filename] remote_host\n", myname);
-    fprintf(out, "\n" );
-    fprintf(out, "Options:\n" );
-    fprintf(out, "   -h         this help\n" );
-    fprintf(out, "   -c n       count of pings to send to each target (default infinity)\n");  
-    fprintf(out, "   -f file    read list of targets from a file\n" );
-    fprintf(out, "   -t n       Set the IP TTL value (Time To Live hops)\n");
-    fprintf(out, "   -i n       interval between sending ping packets (in sec) (default %d)\n", 1);
-    fprintf(out, "   -I if      bind to a particular interface\n");
-    fprintf(out, "   -p port    set the target port (default %d)\n", 80);
-    fprintf(out, "   -q         quiet (don't show per-target/per-ping results)\n" );
-    fprintf(out, "   -s         set the payload size (default %d)\n", 0);
-    fprintf(out, "   -S addr    set source address\n" );
-    fprintf(out, "   -T n       individual target initial timeout (in sec) (default %d)\n", 1);
-    fprintf(out, "   -v         be verbose\n" );
-    fprintf(out, "\n");
-    exit(0);
-} /* usage() */
 
 void add_host(char *dst_host)
 {
