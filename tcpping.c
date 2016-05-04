@@ -685,6 +685,7 @@ void inject_syn_packet(int sequence, HOST_ENTRY *tp_host)
 {
 	int c;
 	int r;
+    libnet_ptag_t tcp_op_tag;
 
 	/* Build the custom TCP header.  We have a weird hack here:
 	 * We use the sequence number to define the packet order
@@ -696,6 +697,20 @@ void inject_syn_packet(int sequence, HOST_ENTRY *tp_host)
 		perror("gettimeofday");
 		exit(1);
 	}
+
+#if 1
+    /* 构建TCP的选项,通常在第一个TCP通信报文中设置MSS */
+    tcp_op_tag = libnet_build_tcp_options(
+            (uint8_t*)"\003\003\012\001\002\004\001\011\010\012\077\077\077\077\000\000\000\000\000\000",
+            20, 
+            l,  
+            0); 
+    if (tcp_op_tag == -1) 
+    {   
+        fprintf(stderr, "Can't build TCP options: %s\n", libnet_geterror(l));
+        exit(1);
+    }   
+#endif
 
 	r = libnet_build_tcp(
 		random() % 65536,                                 /* source port */
