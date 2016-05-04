@@ -685,7 +685,7 @@ void inject_syn_packet(int sequence, HOST_ENTRY *tp_host)
 {
 	int c;
 	int r;
-    libnet_ptag_t tcp_op_tag;
+    libnet_ptag_t tcp_op_tag = 0;
 
 	/* Build the custom TCP header.  We have a weird hack here:
 	 * We use the sequence number to define the packet order
@@ -721,7 +721,7 @@ void inject_syn_packet(int sequence, HOST_ENTRY *tp_host)
 		32768,                                            /* window size */
 		0,                                                /* checksum */
 		0,                                                /* urgent pointer */
-		LIBNET_TCP_H + payload_s,                                     /* TCP packet size */
+		LIBNET_TCP_H + 20 + payload_s,                                     /* TCP packet size */
 		payload,                                             /* payload */
 		payload_s,                                                /* payload size */
 		l,                                                /* libnet handle */
@@ -735,7 +735,7 @@ void inject_syn_packet(int sequence, HOST_ENTRY *tp_host)
 
 	/* custom IP header; I couldn't get autobuild_ipv4 to work */
 	r = libnet_build_ipv4(
-		LIBNET_IPV4_H + LIBNET_TCP_H + payload_s,                /* packet length */
+		LIBNET_IPV4_H + LIBNET_TCP_H + 20 + payload_s,                /* packet length */
 		0,                                           /* tos */
 		htons((l->ptag_state) & 0x0000ffff),         /* IP id */
 		0,                                           /* fragmentation */
