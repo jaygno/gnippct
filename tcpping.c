@@ -701,7 +701,7 @@ void inject_syn_packet(int sequence, HOST_ENTRY *tp_host)
 #if 1
     /* 构建TCP的选项,通常在第一个TCP通信报文中设置MSS */
     tcp_op_tag = libnet_build_tcp_options(
-            (uint8_t*)"\003\003\012\001\002\004\001\011\010\012\077\077\077\077\000\000\000\000\000\000",
+            (uint8_t*)"\003\003\012\001\002\004\005\264\010\012\077\077\077\077\000\000\000\000\000\000",
             20, 
             l,  
             0); 
@@ -843,7 +843,7 @@ int main(int argc, char *argv[])
             case 's':       /* size of packet to send */
                 payload_s = atoi(optarg);
                 if (payload_s < 0 || payload_s > MAX_PAYLOAD_S) {
-                    fprintf(stderr, "ping: illegal negative packet size %d. [0-1460]\n", payload_s);
+                    fprintf(stderr, "ping: illegal negative packet size %d. [0-1440]\n", payload_s);
                     exit(1);
                 }
                 break;

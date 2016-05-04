@@ -14,7 +14,7 @@
 
 #define F_QUIET 0x010
 
-#define MAX_PAYLOAD_S 1460
+#define MAX_PAYLOAD_S 1440
 #define PACKET_HISTORY 1461 
 #define MAX_HOST 1024 
 
