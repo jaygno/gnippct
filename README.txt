@@ -16,6 +16,8 @@ install those libraries with the following:
 sudo apt-get install libnet1-dev
 sudo apt-get install libpcap-dev
 
+https://dbus.freedesktop.org/releases/dbus/
+
 Or, alternatively, libnet1 is conveniently hosted on GitHub:
 http://github.com/sam-github/libnet
 
@@ -23,7 +25,10 @@ While libpcap is hosted at http://www.tcpdump.org/
 
 Build with the following:
 
-make
+make 
+
+if /usr/bin/ld: cannot find -ldbus-1
+   install : https://dbus.freedesktop.org/releases/dbus/ ,suggest 1.0.tar.gz
 
 --- Setuid and tcpping ------------------------------------------------------
 
